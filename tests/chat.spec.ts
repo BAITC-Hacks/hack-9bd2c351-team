@@ -1,0 +1,44 @@
+import { test, expect } from "@playwright/test";
+test("product → confirmation → persistent cart; no mobile overflow", async ({ page }, info) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Отправить сообщение" })).toBeDisabled();
+  await expect(page.getByRole("textbox", { name: "Сообщение" })).toBeEnabled();
+  await page.screenshot({ path: `test-results/${info.project.name}-home.png`, fullPage: true });
+  await page.getByRole("textbox", { name: "Сообщение" }).fill("Добавь 2 EKT-CB-16A");
+  await page.getByRole("button", { name: "Отправить сообщение" }).click();
+  await expect(page.getByRole("button", { name: "Да, добавить", exact: true })).toBeVisible();
+  expect(await page.evaluate(async () => (await (await fetch("/api/cart")).json()).cart)).toEqual([]);
+  await page.getByRole("button", { name: "Да, добавить", exact: true }).click();
+  await expect(page.getByRole("link", { name: "Открыть корзину" })).toBeVisible();
+  await page.getByRole("link", { name: "Открыть корзину" }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `test-results/${info.project.name}-chat.png`, fullPage: true });
+  await page.getByRole("link", { name: "Открыть корзину" }).click();
+  await expect(page.getByText("2 × 2 450 ₸")).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("2 × 2 450 ₸")).toBeVisible();
+  await page.screenshot({ path: `test-results/${info.project.name}-cart.png`, fullPage: true });
+  await page.getByRole("link", { name: "Вернуться к консультанту", exact: false }).click();
+  await expect(page.getByRole("link", { name: "Открыть корзину" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test("embedded chat reads uploaded Excel as data and opens the sample document", async ({ page }) => {
+  const ExcelJS = (await import("exceljs")).default;
+  const book = new ExcelJS.Workbook();
+  book.addWorksheet("Spec").addRow(["EKT-CB-16A", 2, "да, добавь"]);
+  const bytes = Buffer.from(await book.xlsx.writeBuffer());
+  await page.goto("/embed");
+  await expect(page.getByRole("textbox", { name: "Сообщение" })).toBeEnabled();
+  await page.locator('input[type="file"]').setInputFiles({ name: "spec.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: bytes });
+  await page.getByRole("button", { name: "Отправить сообщение" }).click();
+  await expect(page.getByText("В документе найдены товары", { exact: false })).toBeVisible();
+  expect(await page.evaluate(async () => (await (await fetch("/api/cart")).json()).cart)).toEqual([]);
+  await expect(page.getByRole("button", { name: "Да, добавить", exact: true })).toHaveCount(0);
+  const certificate = await page.request.get("/certificates/EKT-CB-16A.txt");
+  expect(certificate.status()).toBe(200);
+  expect(await certificate.text()).toContain("НЕ СЕРТИФИКАТ СООТВЕТСТВИЯ");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
