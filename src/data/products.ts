@@ -1,0 +1,53 @@
+import type { Product } from "@/lib/types";
+
+export const products: Product[] = [
+  {
+    sku: "EKT-CB-16A",
+    name: "Automatic circuit breaker 16A, 1P",
+    category: "Circuit breakers",
+    description: "Single-pole breaker for residential and commercial distribution boards.",
+    price: 2450,
+    currency: "KZT",
+    stockByWarehouse: { Almaty: 24, Astana: 11 },
+    specifications: { poles: "1P", ratedCurrent: "16 A", breakingCapacity: "6 kA", curve: "C" },
+    certificateUrl: "https://example.com/certificates/EKT-CB-16A.pdf",
+  },
+  {
+    sku: "EKT-CB-20A",
+    name: "Automatic circuit breaker 20A, 1P",
+    category: "Circuit breakers",
+    description: "Single-pole C-curve breaker for distribution boards.",
+    price: 2590,
+    currency: "KZT",
+    stockByWarehouse: { Almaty: 0, Astana: 0 },
+    specifications: { poles: "1P", ratedCurrent: "20 A", breakingCapacity: "6 kA", curve: "C" },
+  },
+  {
+    sku: "EKT-CB-20A-PRO",
+    name: "Automatic circuit breaker 20A Pro, 1P",
+    category: "Circuit breakers",
+    description: "In-stock 20A breaker with matching pole count and trip curve.",
+    price: 2980,
+    currency: "KZT",
+    stockByWarehouse: { Almaty: 8, Astana: 4 },
+    specifications: { poles: "1P", ratedCurrent: "20 A", breakingCapacity: "6 kA", curve: "C" },
+    certificateUrl: "https://example.com/certificates/EKT-CB-20A-PRO.pdf",
+  },
+  {
+    sku: "EKT-RCD-25A",
+    name: "Residual-current device 25A, 30mA",
+    category: "Residual-current devices",
+    description: "Two-pole residual-current protection device.",
+    price: 7890,
+    currency: "KZT",
+    stockByWarehouse: { Almaty: 6, Astana: 2 },
+    specifications: { poles: "2P", ratedCurrent: "25 A", residualCurrent: "30 mA", type: "AC" },
+  },
+];
+
+export const purchaseTerms = {
+  payment: "Prototype terms: payment is available by invoice or bank card at checkout.",
+  delivery: "Prototype terms: delivery timing and cost depend on the destination and selected warehouse.",
+  minimumOrder: "There is no minimum order value in this prototype; each SKU may define a pack quantity.",
+};
+
