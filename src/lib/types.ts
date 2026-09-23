@@ -3,11 +3,17 @@ export type Product = {
   name: string;
   category: string;
   description: string;
-  price: number;
+  price?: number;
   currency: "KZT";
   stockByWarehouse: Record<string, number>;
   specifications: Record<string, string>;
   certificateUrl?: string;
+  imageUrl?: string;
+  productUrl?: string;
+  apiId?: string;
+  source: "live" | "demo";
+  availability: "available" | "unavailable" | "unknown";
+  availabilityVerified: boolean;
 };
 
 export type CartItem = {
@@ -29,5 +35,6 @@ export type AssistantResponse = {
   cart?: CartItem[];
   cartUrl?: string;
   awaitingConfirmation?: boolean;
+  catalogSource?: "live" | "demo" | "unavailable";
+  availabilityVerified?: boolean;
 };
-

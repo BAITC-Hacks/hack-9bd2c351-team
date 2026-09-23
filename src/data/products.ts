@@ -11,6 +11,9 @@ export const products: Product[] = [
     stockByWarehouse: { Almaty: 24, Astana: 11 },
     specifications: { poles: "1P", ratedCurrent: "16 A", breakingCapacity: "6 kA", curve: "C" },
     certificateUrl: "https://example.com/certificates/EKT-CB-16A.pdf",
+    source: "demo",
+    availability: "available",
+    availabilityVerified: false,
   },
   {
     sku: "EKT-CB-20A",
@@ -21,6 +24,9 @@ export const products: Product[] = [
     currency: "KZT",
     stockByWarehouse: { Almaty: 0, Astana: 0 },
     specifications: { poles: "1P", ratedCurrent: "20 A", breakingCapacity: "6 kA", curve: "C" },
+    source: "demo",
+    availability: "unavailable",
+    availabilityVerified: false,
   },
   {
     sku: "EKT-CB-20A-PRO",
@@ -32,6 +38,9 @@ export const products: Product[] = [
     stockByWarehouse: { Almaty: 8, Astana: 4 },
     specifications: { poles: "1P", ratedCurrent: "20 A", breakingCapacity: "6 kA", curve: "C" },
     certificateUrl: "https://example.com/certificates/EKT-CB-20A-PRO.pdf",
+    source: "demo",
+    availability: "available",
+    availabilityVerified: false,
   },
   {
     sku: "EKT-RCD-25A",
@@ -42,6 +51,9 @@ export const products: Product[] = [
     currency: "KZT",
     stockByWarehouse: { Almaty: 6, Astana: 2 },
     specifications: { poles: "2P", ratedCurrent: "25 A", residualCurrent: "30 mA", type: "AC" },
+    source: "demo",
+    availability: "available",
+    availabilityVerified: false,
   },
 ];
 
@@ -50,4 +62,3 @@ export const purchaseTerms = {
   delivery: "Prototype terms: delivery timing and cost depend on the destination and selected warehouse.",
   minimumOrder: "There is no minimum order value in this prototype; each SKU may define a pack quantity.",
 };
-

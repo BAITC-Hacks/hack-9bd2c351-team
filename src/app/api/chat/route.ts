@@ -10,9 +10,8 @@ export async function POST(request: Request) {
     if (typeof body.sessionId !== "string" || !body.sessionId.trim()) {
       return NextResponse.json({ error: "A sessionId is required." }, { status: 400 });
     }
-    return NextResponse.json(replyToMessage(body.message, body.sessionId));
+    return NextResponse.json(await replyToMessage(body.message, body.sessionId));
   } catch {
     return NextResponse.json({ error: "Invalid JSON request." }, { status: 400 });
   }
 }
-

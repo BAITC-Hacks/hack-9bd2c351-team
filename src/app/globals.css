@@ -36,6 +36,7 @@ button, input { font: inherit; }
 .stock { padding: 3px 7px; border-radius: 999px; font-weight: 700; }
 .stock.available { color: var(--green); background: #e8f4dc; }
 .stock.unavailable { color: #983d31; background: #fae9e5; }
+.stock.unverified { color: #725b1b; background: #f7f0d7; }
 .confirm-button, .cart-link { display: inline-flex; margin-top: 10px; padding: 10px 14px; border-radius: 10px; border: 0; background: var(--lime); color: var(--ink); font-weight: 800; text-decoration: none; cursor: pointer; }
 .cart-link { background: var(--green); color: white; }
 .typing { margin: 10px 0 0 40px; color: var(--muted); font-size: 12px; }
@@ -67,4 +68,3 @@ button, input { font: inherit; }
   .topbar .eyebrow { display: none; }
   .cart-row { align-items: flex-start; flex-direction: column; }
 }
-
