@@ -5,20 +5,25 @@ import { FormEvent, useMemo, useState } from "react";
 import type { AssistantResponse, Product } from "@/lib/types";
 
 type ChatMessage = { id: string; role: "assistant" | "user"; text: string; data?: AssistantResponse };
-const examples = ["Show EKT-CB-16A", "Is EKT-CB-20A available?", "What are the delivery terms?"];
+const examples = ["Show 200300285_", "Is 200300285_ available?", "What are the delivery terms?"];
 
 function ProductCard({ product, label = "Catalog match" }: { product: Product; label?: string }) {
   const stock = Object.values(product.stockByWarehouse).reduce((sum, count) => sum + count, 0);
+  const stockLabel = product.availabilityVerified
+    ? (product.availability === "available" ? (stock > 0 ? `${stock} in stock` : "Available; quantity not provided") : "Out of stock")
+    : product.source === "demo" ? `Demo stock: ${stock}` : "Availability unverified";
   return (
     <article className="product-card">
-      <span className="eyebrow">{label}</span>
+      <span className="eyebrow">{product.source === "demo" ? "Demo fallback · " : ""}{label}</span>
       <h3>{product.name}</h3>
       <div className="product-meta">
         <span>{product.sku}</span>
-        <span className={stock > 0 ? "stock available" : "stock unavailable"}>{stock > 0 ? `${stock} in stock` : "Out of stock"}</span>
+        <span className={`stock ${product.availabilityVerified ? (product.availability === "available" ? "available" : "unavailable") : "unverified"}`}>{stockLabel}</span>
       </div>
-      <p>{product.description}</p>
-      <strong>{new Intl.NumberFormat("en-US").format(product.price)} KZT</strong>
+      {product.description && <p>{product.description}</p>}
+      {product.price !== undefined && <strong>{new Intl.NumberFormat("en-US").format(product.price)} KZT</strong>}
+      {product.source === "demo" && <p>Live availability could not be verified.</p>}
+      {product.source === "live" && !product.availabilityVerified && <p>Live availability could not be verified.</p>}
     </article>
   );
 }
@@ -75,9 +80,9 @@ export default function Home() {
       </header>
 
       <section className="hero-copy">
-        <span className="status"><i /> Prototype catalog is online</span>
+        <span className="status"><i /> Catalog assistant</span>
         <h2>Technical answers,<br />without the waiting.</h2>
-        <p>Grounded product details, live demo stock, and a confirmation-safe cart.</p>
+        <p>Product answers use the live catalog when available, with clearly labeled demo fallback data.</p>
       </section>
 
       <section className="chat-panel" aria-label="Product assistant chat">
@@ -104,9 +109,8 @@ export default function Home() {
           <input aria-label="Message" value={input} onChange={(event) => setInput(event.target.value)} placeholder="Ask about a product, SKU, delivery..." />
           <button type="submit" disabled={sending || !input.trim()} aria-label="Send message">↗</button>
         </form>
-        <p className="disclaimer">Demo data only · The assistant never requests payment details</p>
+        <p className="disclaimer">Demo fallback stock is not live availability · The assistant never requests payment details</p>
       </section>
     </main>
   );
 }
-
