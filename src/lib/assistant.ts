@@ -1,168 +1,160 @@
 import { purchaseTerms } from "@/data/products";
-import { lookupMentionedProduct, matchingSpecificationCount, suggestAlternatives, totalStock, type ProductLookup } from "@/lib/catalog";
-import { getSession } from "@/lib/sessions";
-import type { AssistantResponse, CartItem, Product } from "@/lib/types";
+import { lookupMentionedProduct, mentionsSku, searchProducts, suggestAlternatives, totalStock, type ProductLookup } from "@/lib/catalog";
+import { rewriteSearch } from "@/lib/language";
+import { getSession, withSessionLock } from "@/lib/sessions";
+import type { AssistantResponse, PendingCartChange, Product, SessionState } from "@/lib/types";
 
-const explicitConfirmations = new Set([
-  "yes", "yes add it", "yes, add it", "confirm", "да", "да добавь", "да, добавь", "иә", "иә қос",
-]);
+const confirmations = new Set(["yes add it", "yes, add it", "confirm add", "да добавь", "да, добавь", "подтверждаю добавление", "иә қос", "иә, қос"]);
+const normalize = (text: string) => text.trim().toLowerCase().replace(/[.!]+$/g, "").trim();
+const money = (value: number) => `${new Intl.NumberFormat("ru-KZ").format(value)} ₸`;
+export type Lookup = (query: string) => Promise<ProductLookup>;
+export type ReplyOptions = { confirmationId?: string; readOnly?: boolean; skipLanguage?: boolean };
 
-function formatMoney(value: number): string {
-  return `${new Intl.NumberFormat("en-US").format(value)} KZT`;
+export function containsPaymentData(text: string): boolean {
+  return /(?:\d[ -]?){13,19}/.test(text) || /(?:cvv|cvc|номер карты|card number)\s*[:=]?\s*\d/i.test(text);
 }
+function isAddIntent(text: string): boolean { return /(?:^|[\s,])(add|buy|добав\p{L}*|куп\p{L}*|закаж\p{L}*|қос\p{L}*)(?=$|[\s,])/iu.test(text); }
+function isCancel(text: string): boolean { return /(?:^|[\s,])(нет|отмен\p{L}*|не добав\p{L}*|не надо|не хочу|не покуп\p{L}*|cancel|no|don't add|do not add|жоқ)(?=$|[\s,.!?])/iu.test(text); }
 
+export function parseQuantity(text: string, product: Product): number | undefined {
+  const withoutIdentity = text.replace(/(?:товар|вариант|item|option)\s*\d+/giu, "").replaceAll(product.sku, "").replace(new RegExp(product.sku.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "ig"), "").replace(product.name, "");
+  const unit = withoutIdentity.match(/(-?\d+(?:[.,]\d+)?)\s*(?:шт\.?|штук\p{L}*|ед\.?|метр\p{L}*|м|units?|pcs|pieces?)(?=$|[\s,.!?])/iu);
+  const afterVerb = withoutIdentity.match(/(?:add|buy|добав\p{L}*|куп\p{L}*|қос\p{L}*)\s+(-?\d+(?:[.,]\d+)?)(?=$|[\s,.!?])/iu);
+  const standalone = withoutIdentity.match(/(?:^|\s)(-?\d+(?:[.,]\d+)?)(?=$|\s)/);
+  const value = Number((unit?.[1] ?? afterVerb?.[1] ?? standalone?.[1] ?? "1").replace(",", "."));
+  return Number.isSafeInteger(value) && value > 0 && value <= 100000 ? value : undefined;
+}
+function termsAnswer(text: string): string {
+  const answers: string[] = [];
+  if (/payment|pay|оплат|төлем/iu.test(text)) answers.push(purchaseTerms.payment);
+  if (/delivery|deliver|достав|жеткіз|самовывоз/iu.test(text)) answers.push(purchaseTerms.delivery);
+  if (/minimum|min order|минималь|партия|партии|кратност|ең аз/iu.test(text)) answers.push(purchaseTerms.minimumOrder);
+  if (!answers.length && /условия покупки|условия заказа|purchase terms/iu.test(text)) answers.push(...Object.values(purchaseTerms));
+  return answers.join("\n\n");
+}
 function describe(product: Product): string {
-  const specs = Object.entries(product.specifications).map(([key, value]) => `${key}: ${value}`).join(", ");
-  const certificate = product.certificateUrl
-    ? ` Certificate: ${product.certificateUrl}`
-    : " No certificate URL was provided by the catalog data.";
-  const price = product.price === undefined ? "Price is not available." : `Price: ${formatMoney(product.price)}.`;
-  const stock = product.availabilityVerified && Object.keys(product.stockByWarehouse).length > 0
-    ? `Stock: ${totalStock(product)}.`
-    : product.availabilityVerified && product.availability === "available"
-      ? "Availability: in stock; quantity was not provided."
-      : product.availabilityVerified
-        ? "Availability: out of stock."
-    : product.source === "demo"
-      ? `Demo stock: ${totalStock(product)}; live availability could not be verified.`
-      : "Live availability could not be verified.";
-  const source = product.source === "demo" ? " Demo fallback data." : "";
-  return `${product.name} (${product.sku}). ${price} ${stock} Specifications: ${specs || "not provided"}.${certificate}${source}`;
+  const stock = product.source === "demo" ? `Демо-остаток: ${totalStock(product)}.`
+    : product.availabilityVerified && Object.keys(product.stockByWarehouse).length ? `Остаток: ${totalStock(product)}.` : "Точный остаток не подтверждён.";
+  const price = product.price === undefined ? "Цена не предоставлена." : `Цена: ${money(product.price)}.`;
+  const specs = Object.entries(product.specifications).map(([key, value]) => `${key}: ${value}`).join("; ");
+  return `${product.name} (${product.sku}). ${price} ${stock}\nХарактеристики: ${specs || "не предоставлены"}.\n${product.certificateUrl ? "Документ доступен в карточке товара." : "Сертификат в каталоге отсутствует."}${product.source === "demo" ? "\nСинтетические данные для демонстрации, не реальные цены и остатки ekt.kz." : ""}`;
+}
+function canPrepare(product: Product): boolean {
+  return product.price !== undefined && Number.isFinite(product.price) && product.price >= 0
+    && Object.keys(product.stockByWarehouse).length > 0 && (product.source === "demo" || product.availabilityVerified);
+}
+function proposal(session: SessionState, product: Product, quantity: number): AssistantResponse {
+  const pending: PendingCartChange = { id: crypto.randomUUID(), sku: product.sku, quantity, unitPrice: product.price!,
+    source: product.source, expiresAt: Date.now() + 5 * 60_000 };
+  session.pendingCartChange = pending;
+  return { message: `Добавить ${quantity} × ${product.name} по ${money(product.price!)}? Итого ${money(product.price! * quantity)}.\nПодтвердите кнопкой или напишите «да, добавь».${product.source === "demo" ? " Это демонстрационная корзина." : ""}`,
+    product, awaitingConfirmation: true, confirmationId: pending.id };
+}
+function withAlternatives(product: Product): AssistantResponse {
+  const alternatives = suggestAlternatives(product);
+  return { message: describe(product) + (alternatives.length ? "\nНашёл доступный аналог с совпадающими характеристиками." : "\nПроверенного аналога в доступном каталоге нет. Уточните замену у менеджера."),
+    product, alternatives, alternativeReasons: Object.fromEntries(alternatives.map((p) => [p.sku,
+      `Совпадают: ${Object.entries(product.specifications).map(([key, value]) => `${key} — ${value}`).join(", ")}. ${p.source === "demo" ? "Демо-остаток" : "Остаток"}: ${totalStock(p)}.`])) };
 }
 
-function parseQuantity(message: string): number {
-  const withoutSku = message.replace(/EKT-[A-Z0-9-]+/gi, "");
-  const match = withoutSku.match(/\b(\d+)\b/);
-  return match ? Math.max(1, Number(match[1])) : 1;
-}
-
-function isAddIntent(message: string): boolean {
-  return /\b(add|buy|cart|добав|куп|себет|қос)\b/i.test(message);
-}
-
-function getTermsAnswer(message: string): string | undefined {
-  if (/payment|pay|оплат|төлем/i.test(message)) return purchaseTerms.payment;
-  if (/delivery|deliver|достав|жеткіз/i.test(message)) return purchaseTerms.delivery;
-  if (/minimum|min order|минималь|ең аз/i.test(message)) return purchaseTerms.minimumOrder;
-  return undefined;
-}
-
-function isCatalogQuestion(message: string): boolean {
-  return isAddIntent(message)
-    || /\b[\p{L}0-9][\p{L}0-9_/-]*\d[\p{L}0-9_/-]*\b/iu.test(message)
-    || /product|catalog|stock|available|certificate|certification|specification|price|sku|article|show|find|search|looking for|do you have|how many|товар|налич|сертифик|характерист|артикул|покажи|найди|ищу|есть ли/i.test(message);
-}
-
-function addToCart(cart: CartItem[], product: Product, quantity: number): void {
-  if (product.price === undefined) return;
-  const existing = cart.find((item) => item.sku === product.sku);
-  if (existing) existing.quantity += quantity;
-  else cart.push({ sku: product.sku, name: product.name, quantity, unitPrice: product.price });
-}
-
-export async function replyToMessage(
-  message: string,
-  sessionId: string,
-  lookupProduct: (query: string) => Promise<ProductLookup> = lookupMentionedProduct,
-): Promise<AssistantResponse> {
+async function respond(message: string, session: SessionState, lookup: Lookup, options: ReplyOptions): Promise<AssistantResponse> {
   const clean = message.trim();
-  const normalized = clean.toLowerCase().replace(/[.!?]+$/g, "").trim();
-  const session = getSession(sessionId);
-
-  if (explicitConfirmations.has(normalized)) {
-    const pending = session.pendingCartChange;
-    if (!pending) return { message: "There is no pending cart change to confirm.", cart: session.cart };
-
-    const lookup = await lookupProduct(pending.sku);
-    const product = lookup.product;
-    if (!product) {
-      session.pendingCartChange = undefined;
-      return { message: "That product could not be verified in the catalog. The cart was not changed.", cart: session.cart, catalogSource: lookup.source, availabilityVerified: false };
-    }
-
-    const alreadyInCart = session.cart.find((item) => item.sku === product.sku)?.quantity ?? 0;
-    if (product.price === undefined || (product.source === "live" && !product.availabilityVerified)) {
-      session.pendingCartChange = undefined;
-      return { message: "Current price or stock could not be verified. The cart was not changed.", cart: session.cart, product, catalogSource: lookup.source, availabilityVerified: false };
-    }
-    const available = totalStock(product) - alreadyInCart;
-    if (pending.quantity > available) {
-      session.pendingCartChange = undefined;
-      return { message: `Stock changed. Only ${Math.max(0, available)} more unit(s) can be added. The cart was not changed.`, cart: session.cart, product, catalogSource: lookup.source, availabilityVerified: product.availabilityVerified };
-    }
-
-    addToCart(session.cart, product, pending.quantity);
+  if (containsPaymentData(clean)) {
     session.pendingCartChange = undefined;
-    return {
-      message: `${pending.quantity} × ${product.name} was added to the cart.${product.source === "demo" ? " This used demo data; live stock could not be verified." : ""}`,
-      cart: session.cart,
-      cartUrl: `/cart?sessionId=${encodeURIComponent(sessionId)}`,
-      product,
-      catalogSource: lookup.source,
-      availabilityVerified: product.availabilityVerified,
-    };
+    return { message: "Не отправляйте платёжные данные в чат. Сообщение не сохранено. Для подбора товара укажите артикул или характеристики." };
   }
-
-  const terms = getTermsAnswer(clean);
-  if (terms) return { message: terms, cart: session.cart };
-
-  if (!isCatalogQuestion(clean)) {
-    return {
-      message: "I can look up a product by name or article, check stock and certificates, or answer payment, delivery, and minimum-order questions.",
-      cart: session.cart,
-    };
+  if (isCancel(clean) && !options.readOnly) {
+    session.pendingCartChange = undefined;
+    return { message: "Добавление отменено. Корзина не изменена." };
   }
-
-  const lookup = await lookupProduct(clean);
-  const product = lookup.product;
+  if (!options.readOnly && (confirmations.has(normalize(clean)) || options.confirmationId)) {
+    const pending = session.pendingCartChange;
+    if (!pending || pending.expiresAt <= Date.now() || (options.confirmationId && options.confirmationId !== pending.id)) {
+      session.pendingCartChange = undefined;
+      return { message: "Нет актуального запроса для подтверждения. Выберите товар и количество заново." };
+    }
+    if (!confirmations.has(normalize(clean))) return { message: "Для добавления напишите «да, добавь»." };
+    session.pendingCartChange = undefined; // Consume once; a failed check also requires a fresh request.
+    const { product } = await lookup(pending.sku);
+    if (!product || product.sku !== pending.sku || !canPrepare(product) || product.source !== pending.source) {
+      return { message: "Не удалось подтвердить текущие цену, источник и остаток. Корзина не изменена." };
+    }
+    const existing = session.cart.find((item) => item.sku === product.sku);
+    const available = totalStock(product) - (existing?.quantity ?? 0);
+    if (pending.quantity > available || pending.quantity % (product.packSize ?? 1) !== 0) {
+      return { message: `Остаток или кратность изменились. Можно добавить не более ${Math.max(0, available)}. Корзина не изменена.`, product };
+    }
+    if (product.price !== pending.unitPrice) {
+      return { ...proposal(session, product, pending.quantity), message: `Цена изменилась. ${proposalText(product, pending.quantity)}` };
+    }
+    if (existing && (existing.source !== product.source || existing.unitPrice !== product.price)) {
+      return { message: "У позиции в корзине изменилась цена или источник. Обратитесь к менеджеру; корзина не изменена." };
+    }
+    if (existing) existing.quantity += pending.quantity;
+    else session.cart.push({ sku: product.sku, name: product.name, quantity: pending.quantity, unitPrice: product.price!, source: product.source });
+    return { message: `Добавлено: ${pending.quantity} × ${product.name}. ${product.source === "demo" ? "Демонстрационная корзина; реальный заказ не создаётся." : "Откройте корзину для просмотра."}`, cartUrl: "/cart", product };
+  }
+  // Any new request supersedes the previous offer, including attachment analysis.
+  session.pendingCartChange = undefined;
+  if (/^(да|yes|confirm|ок|okay|ok|иә)[.!]?$/iu.test(clean)) return { message: "Корзина не изменена. Укажите товар и количество, затем подтвердите фразой «да, добавь»." };
+  if (/^(корзина|покажи корзину|my cart|show cart)$/iu.test(clean)) return { message: "Текущее состояние корзины доступно по ссылке.", cartUrl: "/cart" };
+  if (/менеджер|manager|человек/iu.test(clean)) return { message: "Контакты менеджера доступны на сайте ekt.kz. В прототипе обращение автоматически не отправляется.", suggestions: ["Условия покупки"] };
+  if (/^(привет|здравствуйте|hello|hi|сәлем)[! .]*$/iu.test(clean)) return { message: "Здравствуйте! Помогу подобрать электротехнический товар, проверить характеристики и наличие. Укажите артикул или расскажите, что ищете.", suggestions: ["Автомат 16А", "Условия покупки"] };
+  const terms = termsAnswer(clean);
+  const adding = !options.readOnly && isAddIntent(clean);
+  let found = await lookup(clean);
+  let product = found.product;
+  let results = product ? [product] : searchProducts(clean);
+  const index = clean.match(/(?:товар|вариант|item|option)\s*(\d+)/iu)?.[1];
+  if (!product && index) product = session.lastResults[Number(index) - 1];
+  if (!product && !index && session.lastProduct && /(?:его|этот|него|этого|такой|it|this|сертификат|характеристики|аналог|дешевле)/iu.test(clean) && !/EKT-|\d{6,}_/iu.test(clean)) product = session.lastProduct;
+  if (!product && adding && results.length === 0 && /^(?:add|buy|добав\p{L}*|куп\p{L}*)\s+\d+\s*(?:шт\.?|штук|pcs)?$/iu.test(clean)) product = session.lastProduct;
+  if (!product && results.length === 1) product = results[0];
+  if (!product && !results.length && !terms && !options.skipLanguage && !options.readOnly) {
+    const rewritten = await rewriteSearch(clean, session.lastProduct);
+    if (rewritten) {
+      found = await lookup(rewritten);
+      results = found.product ? [found.product] : searchProducts(rewritten);
+      // An AI search suggestion still needs a user to select the product before purchase.
+      if (!adding && results.length === 1) product = results[0];
+    }
+  }
   if (!product) {
-    if (lookup.source === "live") {
-      return { message: "I couldn't find that product in the live catalog.", cart: session.cart, catalogSource: "live", availabilityVerified: false };
-    }
-    return {
-      message: "I can't verify live catalog availability right now. Demo fallback data is available for sample SKUs such as EKT-CB-16A.",
-      cart: session.cart,
-      catalogSource: "unavailable",
-      availabilityVerified: false,
-    };
+    session.lastResults = results;
+    if (results.length > 1) session.lastProduct = undefined;
+    if (results.length) return { message: [terms, "Нашёл несколько позиций. Выберите артикул; для добавления укажите количество."].filter(Boolean).join("\n\n"), products: results };
+    if (terms) return { message: terms };
+    return { message: "По этому запросу товар не найден в доступной части каталога. Укажите артикул, тип товара или основные параметры. Например: «автомат 16А» или «кабель». При неполной загрузке live-каталога поиск может не охватывать все позиции.", suggestions: ["Автомат 16А", "Покажи EKT-CB-20A", "Условия покупки"] };
   }
-
-  if (product && isAddIntent(clean)) {
-    const quantity = parseQuantity(clean);
-    const alreadyInCart = session.cart.find((item) => item.sku === product.sku)?.quantity ?? 0;
-    if (product.price === undefined || (product.source === "live" && !product.availabilityVerified)) {
-      return { message: `I can't verify the current price or stock for ${product.name}, so I can't prepare a cart change.`, product, cart: session.cart, catalogSource: lookup.source, availabilityVerified: false };
-    }
-    const available = totalStock(product) - alreadyInCart;
-    if (available <= 0) return { message: `${product.name} is not available to add.${product.source === "demo" ? " This is demo fallback data; live availability could not be verified." : ""}`, product, cart: session.cart, catalogSource: lookup.source, availabilityVerified: product.availabilityVerified };
-    if (quantity > available) {
-      return { message: `Requested quantity ${quantity} exceeds the ${available} unit(s) currently available to you. The cart was not changed.`, product, cart: session.cart, catalogSource: lookup.source, availabilityVerified: product.availabilityVerified };
-    }
-
-    session.pendingCartChange = { sku: product.sku, quantity };
-    return {
-      message: `Ready to add ${quantity} × ${product.name} at ${formatMoney(product.price)} each. Reply “yes, add it” to confirm.${product.source === "demo" ? " This is demo data; live stock is unverified." : ""}`,
-      product,
-      cart: session.cart,
-      awaitingConfirmation: true,
-      catalogSource: lookup.source,
-      availabilityVerified: product.availabilityVerified,
-    };
+  // Re-fetch selections from prior results before offering any cart operation.
+  if (adding && product.source === "live" && found.product?.sku !== product.sku) {
+    const selected = await lookup(product.sku);
+    if (!selected.product || selected.product.sku !== product.sku) return { message: "Актуальные данные выбранного товара недоступны. Корзина не изменена." };
+    product = selected.product;
   }
-
-  if (product) {
-    if (!product.availabilityVerified && product.source === "live") {
-      return { message: `${describe(product)} Live availability is unverified.`, product, cart: session.cart, catalogSource: lookup.source, availabilityVerified: false };
-    }
-    if (product.availability === "unavailable") {
-      const alternatives = suggestAlternatives(product);
-      const reason = alternatives[0]
-        ? ` The closest demo option matches ${matchingSpecificationCount(product, alternatives[0])} specification field(s); its live availability is unverified.`
-        : " No compatible in-stock alternative is present in the demo catalog.";
-      return { message: `${describe(product)}${reason}`, product, alternatives, cart: session.cart, catalogSource: lookup.source, availabilityVerified: product.availabilityVerified };
-    }
-    return { message: describe(product), product, cart: session.cart, catalogSource: lookup.source, availabilityVerified: product.availabilityVerified };
+  session.lastProduct = product;
+  session.lastResults = [product];
+  if (adding) {
+    const quantity = parseQuantity(clean, product);
+    if (quantity === undefined) return { message: "Укажите положительное целое количество. Корзина не изменена.", product };
+    if (!canPrepare(product)) return { message: "Точные цена или остаток не подтверждены. Добавление недоступно.", product };
+    if (quantity % (product.packSize ?? 1) !== 0) return { message: `Количество должно быть кратно ${product.packSize}. Корзина не изменена.`, product };
+    const available = totalStock(product) - (session.cart.find((item) => item.sku === product.sku)?.quantity ?? 0);
+    if (available <= 0) return withAlternatives(product);
+    if (quantity > available) return { message: `Запрошено ${quantity}, доступно для добавления ${available}. Корзина не изменена.`, product };
+    return proposal(session, product, quantity);
   }
-
-  return { message: "Ask me about a product, certificate, payment, delivery, or minimum-order terms.", cart: session.cart };
+  const answer = product.availability === "unavailable" || /аналог|alternative|дешевле/iu.test(clean) ? withAlternatives(product) : { message: describe(product), product };
+  return { ...answer, message: [terms, answer.message].filter(Boolean).join("\n\n"), suggestions: [`Добавь 1 ${product.sku}`, "Условия покупки"] };
+}
+function proposalText(product: Product, quantity: number): string {
+  return `Добавить ${quantity} × ${product.name} по ${money(product.price!)}? Итого ${money(product.price! * quantity)}. Подтвердите повторно: «да, добавь».`;
+}
+export async function replyToMessage(message: string, sessionId: string, lookup: Lookup = lookupMentionedProduct, options: ReplyOptions = {}): Promise<AssistantResponse> {
+  return withSessionLock(sessionId, async () => {
+    const session = getSession(sessionId);
+    const response = await respond(message, session, lookup, options);
+    return structuredClone({ ...response, cart: session.cart, catalogSource: response.product?.source,
+      availabilityVerified: response.product?.availabilityVerified });
+  });
 }

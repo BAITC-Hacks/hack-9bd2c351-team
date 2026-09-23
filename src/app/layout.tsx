@@ -4,10 +4,10 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "EKT Assistant",
-  description: "A grounded electrical catalog assistant prototype",
+  description: "Консультант по электротехнической продукции: подбор, наличие, аналоги и корзина",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
-  return <html lang="en"><body>{children}</body></html>;
+  return <html lang="ru"><body>{children}</body></html>;
 }
 

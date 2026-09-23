@@ -106,3 +106,22 @@ describe("EKT partner catalog adapter", () => {
     expect(result.product).toBeUndefined();
   });
 });
+
+describe("partner data integrity", () => {
+  it("refuses inconsistent warehouse and total stock", () => {
+    const product = mapEktProduct({ article: "A-1", price: 100, quantity: 2,
+      stores: [{ name: "Алматы", quantity: 10 }] }, "live");
+    expect(product.availabilityVerified).toBe(false);
+    expect(product.stockByWarehouse).toEqual({});
+  });
+  it("maps pack size and rejects negative prices", () => {
+    const product = mapEktProduct({ article: "A-2", price: -100, properties: { KRATNOST_MIN: "5" } }, "live");
+    expect(product.price).toBeUndefined(); expect(product.packSize).toBe(5);
+  });
+});
+
+it("does not turn a partial warehouse list into a quantified stock total", () => {
+  const product = mapEktProduct({ article: "A-3", in_stock: true,
+    stores: [{ name: "Алматы", quantity: 10 }, { name: "Астана" }] }, "live");
+  expect(product.stockByWarehouse).toEqual({});
+});

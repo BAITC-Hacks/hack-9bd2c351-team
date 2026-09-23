@@ -73,6 +73,9 @@ function apiConfig(options: EktApiOptions) {
     throw new EktApiError("EKT_API_BASE_URL is not a valid URL.");
   }
   if (parsed.username || parsed.password) throw new EktApiError("EKT_API_BASE_URL must not contain credentials.");
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && ["localhost", "127.0.0.1"].includes(parsed.hostname))) {
+    throw new EktApiError("EKT API requires HTTPS (except local development).");
+  }
   return { baseUrl: `${baseUrl.replace(/\/+$/, "")}/`, username, password };
 }
 
@@ -86,6 +89,7 @@ async function requestJson(url: URL, options: EktApiOptions): Promise<unknown> {
       headers: { Accept: "application/json", Authorization: authorization },
       signal: AbortSignal.timeout(options.timeoutMs ?? 8000),
       cache: "no-store",
+      redirect: "error",
     });
   } catch {
     throw new EktApiError("EKT API request failed or timed out.");
@@ -185,6 +189,10 @@ function mapAvailability(source: JsonRecord, stock: Record<string, number>, stor
   const quantity = firstNumber(source, ["quantity", "stock", "available_quantity", "availableQuantity"]);
   const explicit = source.availability ?? source.available ?? source.in_stock ?? source.inStock ?? source.stock_status ?? source.stockStatus;
   if (quantity !== undefined && quantity >= 0) {
+    if (Object.keys(stock).length && (!storesValid || Object.values(stock).reduce((sum, value) => sum + value, 0) !== quantity)) {
+      for (const key of Object.keys(stock)) delete stock[key];
+      return { availability: "unknown" as const, availabilityVerified: false };
+    }
     if (!Object.keys(stock).length) stock["All warehouses"] = quantity;
     return { availability: quantity > 0 ? "available" as const : "unavailable" as const, availabilityVerified: true };
   }
@@ -192,6 +200,8 @@ function mapAvailability(source: JsonRecord, stock: Record<string, number>, stor
     const total = Object.values(stock).reduce((sum, value) => sum + value, 0);
     return { availability: total > 0 ? "available" as const : "unavailable" as const, availabilityVerified: true };
   }
+  // A partial warehouse list is not a verified total, even if in_stock is true.
+  for (const key of Object.keys(stock)) delete stock[key];
   if (typeof explicit === "boolean") {
     return { availability: explicit ? "available" as const : "unavailable" as const, availabilityVerified: true };
   }
@@ -210,13 +220,17 @@ export function mapEktProduct(source: JsonRecord, origin: Product["source"]): Pr
   const stores = parseStores(source.stores ?? source.stockByWarehouse ?? source.warehouses);
   const stock = stores.stock;
   const availability = mapAvailability(source, stock, stores.valid);
+  const price = firstNumber(source, ["price", "sale_price", "cost"]);
+  const packSize = firstNumber(source, ["packSize", "pack_size", "minimum_quantity"])
+    ?? firstNumber(record(source.properties) ?? {}, ["KRATNOST_MIN"]);
   const product: Product = {
     sku,
     name,
     category: firstText(source, ["category", "category_name", "categoryName", "group", "group_name"]) ?? "Uncategorized",
     description: firstText(source, ["description", "detail", "short_description"]) ?? "",
     currency: "KZT",
-    price: firstNumber(source, ["price", "sale_price", "cost"]),
+    price: price !== undefined && price >= 0 ? price : undefined,
+    packSize: packSize !== undefined && Number.isSafeInteger(packSize) && packSize > 0 ? packSize : 1,
     stockByWarehouse: stock,
     specifications: mapSpecifications(source.properties ?? source.specifications),
     certificateUrl: getCertificateUrl(source),
